@@ -765,102 +765,56 @@ with tab_news:
 # =========================================================
 # TAB: ALERTS
 # =========================================================
-with tab_alerts:
-    st.markdown("### Alert Payload")
 
-    st.markdown(
-        f"""
-<div class="glass">
-  <div class="kpi-label">Alert Type</div>
-  <div class="kpi-value">{(alert or {}).get("alert_type","N/A")}</div>
-  <div class="kpi-sub">{(alert or {}).get("message","")}</div>
-</div>
-""",
-        unsafe_allow_html=True,
+# -----------------------------------------------------
+# ENTERPRISE-GRADE SLACK MESSAGE FORMAT (FINAL & FIXED)
+# -----------------------------------------------------
+def build_slack_message(
+    company: str,
+    ticker: str,
+    last_price: float,
+    forecast_df: pd.DataFrame,
+    sentiment_score: float,
+    strategic_signal: dict,
+    llm_summary: str,
+) -> str:
+    """
+    Builds a professional Strategic Intelligence Slack alert
+    with safe formatting and no runtime errors.
+    """
+
+    # ---------- Forecast Handling ----------
+    if forecast_df is not None and not forecast_df.empty:
+        forecast_price = float(forecast_df["yhat"].tail(7).mean())
+        pct_change = ((forecast_price - last_price) / last_price) * 100
+        forecast_price_str = f"${forecast_price:,.2f}"
+        pct_change_str = f"{pct_change:+.2f}%"
+    else:
+        forecast_price_str = "N/A"
+        pct_change_str = "N/A"
+
+    # ---------- Sentiment ----------
+    sentiment_label = (
+        "Positive" if sentiment_score > 20
+        else "Negative" if sentiment_score < -20
+        else "Neutral"
     )
 
-    st.markdown("#### JSON Preview")
-    st.json(alert)
+    model_used = "Prophet"
+    signal = strategic_signal.get("signal", "NEUTRAL")
 
-    # -----------------------------------------------------
-    # ENTERPRISE-GRADE SLACK MESSAGE FORMAT
-    # -----------------------------------------------------
-    def build_slack_message(
-        company: str,
-        ticker: str,
-        last_price: float,
-        forecast_df: pd.DataFrame,
-        sentiment_score: float,
-        strategic_signal: dict,
-        llm_summary: str,
-    ) -> str:
-        """Builds a professional Strategic Intelligence Slack alert"""
-
-        forecast_price = None
-        pct_change = None
-
-        if forecast_df is not None and not forecast_df.empty:
-            forecast_price = float(forecast_df["yhat"].tail(7).mean())
-            pct_change = ((forecast_price - last_price) / last_price) * 100
-
-        sentiment_label = (
-            "Positive" if sentiment_score > 20
-            else "Negative" if sentiment_score < -20
-            else "Neutral"
-        )
-
-        model_used = "Prophet"
-
-        return f"""
+    return f"""
 :rotating_light: *STRATEGIC INTELLIGENCE ALERT — {company} ({ticker})* :rotating_light:
 
-*FINAL TRADING SIGNAL:* *{strategic_signal['signal']}*
+*FINAL TRADING SIGNAL:* *{signal}*
 
 *--- Executive Summary ---*
 • Current Price: ${last_price:,.2f}
-• Forecasted Price (7-Day Avg): ${forecast_price:,.2f if forecast_price else 'N/A'}
-• Price Change (7-Day): {pct_change:+.2f}% if pct_change else N/A
+• Forecasted Price (7-Day Avg): {forecast_price_str}
+• Price Change (7-Day): {pct_change_str}
 • Aggregate Sentiment: {sentiment_score:+.2f} ({sentiment_label})
 • Forecasting Model: {model_used}
 
 *--- Strategy Insight ---*
 {llm_summary.strip()}
 """
-
-    b1, b2, b3 = st.columns([1, 1, 2])
-
-    with b1:
-        if st.button("🔄 Refresh Now"):
-            st.cache_data.clear()
-            st.rerun()
-
-    with b2:
-        if slack_enabled and st.button("🚨 Send Strategic Slack Alert"):
-            try:
-                slack_message = build_slack_message(
-                    company=company,
-                    ticker=ticker,
-                    last_price=last_close,
-                    forecast_df=forecast_df,
-                    sentiment_score=sent_score,
-                    strategic_signal=strategic_signal,
-                    llm_summary=llm_explanation,
-                )
-
-                ok = send_slack({"text": slack_message})
-
-                if ok:
-                    st.success("Strategic intelligence alert sent to Slack.")
-                else:
-                    st.warning("Slack webhook not configured or delivery failed.")
-
-            except Exception as e:
-                st.error(f"Slack alert failed: {e}")
-
-    with b3:
-        st.download_button(
-            "Download Alert JSON",
-            data=pd.Series(alert).to_json().encode("utf-8"),
-            file_name=f"{company}_alert.json",
-            mime="application/json",
-        )
