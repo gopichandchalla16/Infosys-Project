@@ -678,6 +678,6 @@ with tab_alerts:
 # FOOTER
 # ------------------------------------------------------------------------------
 st.markdown(
-    "<br/><div style='text-align:center; color: #4a5568; font-size: 0.8rem;'>Market Intelligence Engine v2.4.0-Stable | Proprietary Internal Use Only</div>",
+    "<br/><div style='text-align:center; color: #4a5568; font-size: 0.8rem;'>Infosys Springboard Internship 2025 | Market Intelligence Engine</div>",
     unsafe_allow_html=True
 )
