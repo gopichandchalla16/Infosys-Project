@@ -782,19 +782,80 @@ with tab_alerts:
     st.markdown("#### JSON Preview")
     st.json(alert)
 
+    # -----------------------------------------------------
+    # ENTERPRISE-GRADE SLACK MESSAGE FORMAT
+    # -----------------------------------------------------
+    def build_slack_message(
+        company: str,
+        ticker: str,
+        last_price: float,
+        forecast_df: pd.DataFrame,
+        sentiment_score: float,
+        strategic_signal: dict,
+        llm_summary: str,
+    ) -> str:
+        """Builds a professional Strategic Intelligence Slack alert"""
+
+        forecast_price = None
+        pct_change = None
+
+        if forecast_df is not None and not forecast_df.empty:
+            forecast_price = float(forecast_df["yhat"].tail(7).mean())
+            pct_change = ((forecast_price - last_price) / last_price) * 100
+
+        sentiment_label = (
+            "Positive" if sentiment_score > 20
+            else "Negative" if sentiment_score < -20
+            else "Neutral"
+        )
+
+        model_used = "Prophet"
+
+        return f"""
+:rotating_light: *STRATEGIC INTELLIGENCE ALERT — {company} ({ticker})* :rotating_light:
+
+*FINAL TRADING SIGNAL:* *{strategic_signal['signal']}*
+
+*--- Executive Summary ---*
+• Current Price: ${last_price:,.2f}
+• Forecasted Price (7-Day Avg): ${forecast_price:,.2f if forecast_price else 'N/A'}
+• Price Change (7-Day): {pct_change:+.2f}% if pct_change else N/A
+• Aggregate Sentiment: {sentiment_score:+.2f} ({sentiment_label})
+• Forecasting Model: {model_used}
+
+*--- Strategy Insight ---*
+{llm_summary.strip()}
+"""
+
     b1, b2, b3 = st.columns([1, 1, 2])
+
     with b1:
         if st.button("🔄 Refresh Now"):
             st.cache_data.clear()
             st.rerun()
 
     with b2:
-        if slack_enabled and st.button("🚨 Send Slack Alert"):
-            ok = send_slack(alert)
-            if ok:
-                st.success("Slack alert sent successfully.")
-            else:
-                st.warning("Slack webhook not configured.")
+        if slack_enabled and st.button("🚨 Send Strategic Slack Alert"):
+            try:
+                slack_message = build_slack_message(
+                    company=company,
+                    ticker=ticker,
+                    last_price=last_close,
+                    forecast_df=forecast_df,
+                    sentiment_score=sent_score,
+                    strategic_signal=strategic_signal,
+                    llm_summary=llm_explanation,
+                )
+
+                ok = send_slack({"text": slack_message})
+
+                if ok:
+                    st.success("Strategic intelligence alert sent to Slack.")
+                else:
+                    st.warning("Slack webhook not configured or delivery failed.")
+
+            except Exception as e:
+                st.error(f"Slack alert failed: {e}")
 
     with b3:
         st.download_button(
