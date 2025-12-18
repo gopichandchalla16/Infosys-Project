@@ -1,17 +1,32 @@
-# app.py
+# ==============================================================================
+# PROJECT: Real-Time Market Intelligence System
+# FILE: app.py
+# DESCRIPTION: Main Streamlit dashboard for strategic market analysis,
+#              AI-driven sentiment, forecasting, and Slack alerting.
+# ==============================================================================
+
 import sys
 import os
 from datetime import datetime, timedelta
 
+# -----------------------------
+# DIRECTORY SETUP
+# -----------------------------
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+# -----------------------------
+# IMPORT LIBRARIES
+# -----------------------------
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from streamlit_autorefresh import st_autorefresh
+
+# Core Strategy Logic
 from core.strategy import compute_competitive_index, classify_strategic_signal
 from core.llm_strategy import generate_strategic_explanation
 from core.market_data import fetch_market_data
@@ -22,14 +37,19 @@ from core.alerts import build_alert, send_slack
 from core.utils import get_ticker
 from core.utils import ALLOWED_COMPANIES
 
-# -----------------------------
-# PAGE CONFIG
-# -----------------------------
-st.set_page_config(page_title="Real-Time Market Intelligence", layout="wide", page_icon="📈")
+# ------------------------------------------------------------------------------
+# PAGE CONFIGURATION
+# ------------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Real-Time Market Intelligence",
+    layout="wide",
+    page_icon="📈",
+    initial_sidebar_state="expanded"
+)
 
-# -----------------------------
-# GLOBAL PREMIUM UI (GLASS + DARK)
-# -----------------------------
+# ------------------------------------------------------------------------------
+# GLOBAL PREMIUM UI (GLASS + DARK THEME)
+# ------------------------------------------------------------------------------
 st.markdown(
     """
 <style>
@@ -144,12 +164,6 @@ hr{
   border-right: 1px solid rgba(255,255,255,0.06);
 }
 
-[data-testid="stDataFrame"]{
-  background: rgba(255,255,255,0.03);
-  border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.06);
-}
-
 .stButton>button{
   background: linear-gradient(90deg, var(--aqua), var(--amber));
   border: none;
@@ -158,8 +172,9 @@ hr{
   border-radius: 999px;
   padding: 0.55rem 1rem;
   transition: transform 0.16s ease;
+  width: 100%;
 }
-.stButton>button:hover{ transform: scale(1.03); }
+.stButton>button:hover{ transform: scale(1.02); }
 
 .small-note{ color: var(--muted); font-size: 0.85rem; }
 </style>
@@ -167,15 +182,17 @@ hr{
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# HELPERS
-# -----------------------------
+# ------------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
 def _safe_pct(a: float, b: float) -> float:
+    """Safely compute percentage change."""
     if b == 0 or pd.isna(b) or pd.isna(a):
         return 0.0
     return float((a - b) / b * 100.0)
 
 def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Compute Relative Strength Index."""
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
@@ -183,8 +200,8 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rsi = 100 - (100 / (1 + rs))
     return rsi.bfill().fillna(50)
 
-
 def _sentiment_badge(label: str) -> str:
+    """Return HTML badge for sentiment labels."""
     lbl = (label or "").lower()
     if lbl == "positive":
         return '<span class="badge badge-pos">Positive</span>'
@@ -192,6 +209,42 @@ def _sentiment_badge(label: str) -> str:
         return '<span class="badge badge-neg">Negative</span>'
     return '<span class="badge badge-neu">Neutral</span>'
 
+def build_slack_message(company, ticker, last_price, forecast_df, sentiment_score, strategic_signal, llm_summary):
+    """
+    FIXED: Constructs a professional strategic alert for Slack.
+    Uses Markdown blocks for a premium appearance in Slack.
+    """
+    # Forecast direction calculation
+    f_status = "No data"
+    if forecast_df is not None and not forecast_df.empty:
+        start_f = forecast_df['yhat'].iloc[0]
+        end_f = forecast_df['yhat'].iloc[-1]
+        pct = ((end_f - start_f)/start_f)*100
+        f_status = f"{'📈 Bullish' if pct > 0 else '📉 Bearish'} ({pct:+.2f}%)"
+
+    # Strategic Signal Formatting
+    sig_val = strategic_signal.get('signal', 'NEUTRAL')
+    emoji = "🚀" if sig_val == "OPPORTUNITY" else "⚠️" if sig_val == "THREAT" else "⚖️"
+
+    # Construct plain text for Slack
+    msg = (
+        f"{emoji} *STRATEGIC INTELLIGENCE ALERT: {company} ({ticker})*\n"
+        f"──────────────────────────────────\n"
+        f"💰 *Market Price:* ${last_price:,.2f}\n"
+        f"🎭 *Net Sentiment:* {sentiment_score:+.1f}%\n"
+        f"🔮 *7-Day Forecast:* {f_status}\n"
+        f"🎯 *Strategic Signal:* `{sig_val}`\n"
+        f"──────────────────────────────────\n"
+        f"*AI Strategic Summary:*\n"
+        f"_{llm_summary[:400]}..._\n"
+        f"──────────────────────────────────\n"
+        f"📍 _Generated by Market Intel AI Engine_"
+    )
+    return msg
+
+# -----------------------------
+# CACHED DATA LOADERS
+# -----------------------------
 @st.cache_data(show_spinner=False, ttl=300)
 def load_market_data(company: str) -> pd.DataFrame:
     return fetch_market_data(company)
@@ -200,61 +253,63 @@ def load_market_data(company: str) -> pd.DataFrame:
 def load_news(company: str):
     return fetch_news(company)
 
-# -----------------------------
+# ------------------------------------------------------------------------------
 # SIDEBAR CONTROLS
-# -----------------------------
+# ------------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## Controls")
+    st.markdown("## ⚙️ Analysis Controls")
     company = st.selectbox(
-        "Company",
+        "Select Target Company",
         sorted(ALLOWED_COMPANIES),
-)
+    )
 
     ticker = get_ticker(company)
 
     range_label = st.selectbox(
-        "Time Range",
+        "Historical Time Range",
         ["1M", "3M", "6M", "1Y", "MAX"],
         index=1,
-        help="Controls how much historical data is shown in charts and KPIs.",
+        help="Select window for trend analysis and KPI computation.",
     )
 
+    st.markdown("---")
+    st.markdown("### 📊 Visualization Prefs")
     show_candles = st.toggle("Candlestick View", value=True)
-    show_volume = st.toggle("Show Volume", value=True)
+    show_volume = st.toggle("Show Volume Bar", value=True)
     show_indicators = st.toggle("Show Indicators (MA + RSI)", value=True)
 
     st.markdown("---")
-    news_limit = st.slider("News Articles", 5, 30, 12)
-    auto_refresh = st.toggle("Auto Refresh (Market + News)", value=False)
-    refresh_secs = st.slider("Refresh Interval (sec)", 15, 120, 30, disabled=not auto_refresh)
+    st.markdown("### 📰 Content & Live Data")
+    news_limit = st.slider("Max News Articles", 5, 30, 12)
+    auto_refresh = st.toggle("Enable Auto-Refresh", value=False)
+    refresh_secs = st.slider("Interval (sec)", 15, 120, 30, disabled=not auto_refresh)
 
     st.markdown("---")
-    slack_enabled = st.toggle("Enable Slack Button", value=True)
+    slack_enabled = st.toggle("Slack Integration", value=True)
     st.markdown(
-        "<div class='small-note'>Tip: Use this for your demo. KPIs + Candlestick + Sentiment + News Cards impress quickly.</div>",
+        "<div class='small-note'>Press <b>'R'</b> to manually force clear cache.</div>",
         unsafe_allow_html=True,
     )
 
-# Auto refresh
+# Auto refresh handler
 if auto_refresh:
-    st.caption(f"Auto-refresh enabled every {refresh_secs}s")
-    st.autorefresh(interval=refresh_secs * 1000, key="auto_refresh")
+    st_autorefresh(interval=refresh_secs * 1000, key="market_auto_refresh")
 
-# -----------------------------
-# HEADER
-# -----------------------------
+# ------------------------------------------------------------------------------
+# DASHBOARD HEADER
+# ------------------------------------------------------------------------------
 st.markdown(
     f"""
 <div class="header-wrap">
   <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
     <div>
-      <div class="title">Real-Time Market Intelligence</div>
+      <div class="title">Market Intelligence & Strategy Engine</div>
       <div class="subtitle">
-        Company: <b>{company}</b> ({ticker}) · Strategic Intelligence · Market Trends · AI Sentiment · Forecast · Alerts
+        Current Asset: <b>{company}</b> ({ticker}) · Competitive Intel · AI Sentiment · Prophet Forecast
       </div>
     </div>
     <div style="text-align:right;">
-      <div class="badge">Internship Project</div>
+      <div class="badge">Enterprise Version</div>
       <div class="news-meta">{datetime.now().strftime("%d %b %Y · %I:%M %p")}</div>
     </div>
   </div>
@@ -263,19 +318,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# LOAD DATA
-# -----------------------------
-with st.spinner("Loading market data and news..."):
+# ------------------------------------------------------------------------------
+# DATA ACQUISITION & PROCESSING
+# ------------------------------------------------------------------------------
+with st.spinner(f"Acquiring {company} market dynamics..."):
     market_df = load_market_data(company)
 
 if market_df is None or market_df.empty:
-    st.error("Market data unavailable. Please check your data source or ticker mapping.")
+    st.error("Market data unavailable. Please verify API availability or ticker mappings.")
     st.stop()
 
-# Ensure datetime index
+# Datetime normalization
 if not isinstance(market_df.index, pd.DatetimeIndex):
-    # try common patterns: Date column or reset index
     if "Date" in market_df.columns:
         market_df["Date"] = pd.to_datetime(market_df["Date"])
         market_df = market_df.set_index("Date")
@@ -284,7 +338,7 @@ if not isinstance(market_df.index, pd.DatetimeIndex):
 
 market_df = market_df.sort_index()
 
-# Filter by range
+# Window Filtering
 end_dt = market_df.index.max()
 if range_label == "1M":
     start_dt = end_dt - pd.Timedelta(days=31)
@@ -301,24 +355,24 @@ df = market_df.loc[market_df.index >= start_dt].copy()
 if df.empty:
     df = market_df.tail(120).copy()
 
-# Indicators
+# Feature Engineering
 df["Return"] = df["Close"].pct_change() * 100
 df["MA7"] = df["Close"].rolling(7).mean()
 df["MA21"] = df["Close"].rolling(21).mean()
 df["RSI14"] = _compute_rsi(df["Close"], 14)
 
-# News + Sentiment
-with st.spinner("Fetching headlines and running sentiment..."):
+# News Feed & FinBERT Sentiment Analysis
+with st.spinner("Processing NLP news sentiment..."):
     news = load_news(company) or []
     sentiment_details, sentiment_counts = analyze_sentiment(news)
 
-# Forecast
-with st.spinner("Generating forecast..."):
+# Time Series Forecasting
+with st.spinner("Calculating Prophet forecast..."):
     forecast_df = run_prophet(market_df) if len(market_df) >= 60 else None
 
-# -----------------------------
-# STRATEGIC INTELLIGENCE LOGIC
-# -----------------------------
+# ------------------------------------------------------------------------------
+# CORE STRATEGY CALCULATION
+# ------------------------------------------------------------------------------
 competitive_index = compute_competitive_index(
     market_df=market_df,
     sentiment_counts=sentiment_counts or {},
@@ -331,8 +385,7 @@ strategic_signal = classify_strategic_signal(
     forecast_df=forecast_df,
 )
 
-# Alert payload
-alert = build_alert(
+alert_payload = build_alert(
     company,
     ticker,
     sentiment_counts or {},
@@ -341,9 +394,7 @@ alert = build_alert(
         "strategic_signal": strategic_signal,
     },
 )
-# -----------------------------
-# LLM STRATEGIC EXPLANATION
-# -----------------------------
+
 llm_explanation = generate_strategic_explanation(
     company=company,
     competitive_index=competitive_index,
@@ -351,10 +402,9 @@ llm_explanation = generate_strategic_explanation(
     sentiment_counts=sentiment_counts or {},
 )
 
-
-# -----------------------------
-# KPI ROW
-# -----------------------------
+# ------------------------------------------------------------------------------
+# KPI SECTION
+# ------------------------------------------------------------------------------
 last_close = float(df["Close"].iloc[-1])
 prev_close = float(df["Close"].iloc[-2]) if len(df) > 1 else last_close
 chg_1d = _safe_pct(last_close, prev_close)
@@ -388,431 +438,246 @@ def kpi_card(col, label, value, sub):
         unsafe_allow_html=True,
     )
 
-kpi_card(k1, "Last Close", f"{last_close:,.2f}", f"1D: {chg_1d:+.2f}%")
-kpi_card(k2, f"Change ({range_label})", f"{chg_range:+.2f}%", "Price performance")
-kpi_card(k3, "Volatility", f"{volatility:.2f}%", "Std dev of daily returns")
-kpi_card(k4, "Sentiment Score", f"{sent_score:+.1f}", f"Pos {pos} · Neu {neu} · Neg {neg}")
+kpi_card(k1, "Latest Price", f"${last_close:,.2f}", f"Change: {chg_1d:+.2f}%")
+kpi_card(k2, f"Range Performance", f"{chg_range:+.2f}%", f"Window: {range_label}")
+kpi_card(k3, "Daily Volatility", f"{volatility:.2f}%", "Std Dev Returns")
+kpi_card(k4, "Net Sentiment", f"{sent_score:+.1f}", f"P: {pos} | N: {neg} | O: {neu}")
 kpi_card(
     k5,
-    "Alert",
-    f"{(alert or {}).get('alert_type','N/A')}",
-    (alert or {}).get("strategic_action", "—")[:34] + "…",
+    "Strategic Risk",
+    f"{(alert_payload or {}).get('alert_type','N/A')}",
+    (alert_payload or {}).get("strategic_action", "Monitoring")[:34] + "...",
 )
-
 
 st.markdown("<hr/>", unsafe_allow_html=True)
 
-# -----------------------------
-# MAIN CONTENT TABS
-# -----------------------------
+# ------------------------------------------------------------------------------
+# MAIN INTERFACE TABS
+# ------------------------------------------------------------------------------
 tab_strategy, tab_overview, tab_forecast, tab_sentiment, tab_news, tab_alerts = st.tabs(
-    ["🧠 Strategy", "📈 Market", "🧠 Forecast", "💬 Sentiment", "📰 News", "🔔 Alerts"]
+    ["🧠 Strategic Intel", "📈 Market Dynamics", "🔮 Forecast", "💬 NLP Sentiment", "📰 Newsfeed", "🔔 Alert Hub"]
 )
 
-
 # =========================================================
-# TAB: MARKET
-# =========================================================
-with tab_overview:
-    left, right = st.columns([1.75, 1.0], gap="large")
-
-    with left:
-        st.markdown("### Price Trend")
-
-        fig = go.Figure()
-
-        if show_candles and all(c in df.columns for c in ["Open", "High", "Low", "Close"]):
-            fig.add_trace(
-                go.Candlestick(
-                    x=df.index,
-                    open=df["Open"],
-                    high=df["High"],
-                    low=df["Low"],
-                    close=df["Close"],
-                    name="OHLC",
-                    increasing_line_color="rgba(34,197,94,0.85)",
-                    decreasing_line_color="rgba(255,77,109,0.85)",
-                )
-            )
-        else:
-            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close", line=dict(width=2.8)))
-
-        if show_indicators:
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA7"], name="MA 7", line=dict(width=2)))
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA21"], name="MA 21", line=dict(width=2)))
-
-        fig.update_layout(
-            template="plotly_dark",
-            height=520,
-            margin=dict(l=12, r=12, t=40, b=12),
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-
-        if show_volume and "Volume" in df.columns:
-            fig2 = go.Figure()
-            fig2.add_trace(go.Bar(x=df.index, y=df["Volume"], name="Volume"))
-            fig2.update_layout(
-                template="plotly_dark",
-                height=180,
-                margin=dict(l=12, r=12, t=20, b=12),
-                hovermode="x unified",
-                showlegend=False,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("### Returns Snapshot")
-        r1, r2 = st.columns(2)
-
-        with r1:
-            fig_ret = px.histogram(df.dropna(subset=["Return"]), x="Return", nbins=40, template="plotly_dark")
-            fig_ret.update_layout(height=260, margin=dict(l=12, r=12, t=30, b=12))
-            st.plotly_chart(fig_ret, use_container_width=True)
-
-        with r2:
-            fig_rsi = go.Figure()
-            fig_rsi.add_trace(go.Scatter(x=df.index, y=df["RSI14"], name="RSI(14)", line=dict(width=2.4)))
-            fig_rsi.add_hline(y=70, line_width=1, line_dash="dash", line_color="rgba(255,179,71,0.85)")
-            fig_rsi.add_hline(y=30, line_width=1, line_dash="dash", line_color="rgba(0,229,255,0.85)")
-            fig_rsi.update_layout(template="plotly_dark", height=260, margin=dict(l=12, r=12, t=30, b=12))
-            st.plotly_chart(fig_rsi, use_container_width=True)
-
-    with right:
-        st.markdown("### Quick Summary")
-
-        trend_txt = "Uptrend" if df["MA7"].iloc[-1] >= df["MA21"].iloc[-1] else "Downtrend"
-        rsi_now = float(df["RSI14"].iloc[-1])
-        rsi_txt = "Overbought" if rsi_now >= 70 else "Oversold" if rsi_now <= 30 else "Neutral"
-
-        st.markdown(
-            f"""
-<div class="glass">
-  <div class="kpi-label">Trend</div>
-  <div class="kpi-value">{trend_txt}</div>
-  <div class="kpi-sub">Based on MA7 vs MA21 crossover</div>
-</div>
-<br/>
-<div class="glass">
-  <div class="kpi-label">RSI(14)</div>
-  <div class="kpi-value">{rsi_now:.1f}</div>
-  <div class="kpi-sub">{rsi_txt}</div>
-</div>
-<br/>
-<div class="glass">
-  <div class="kpi-label">Average Volume (20d)</div>
-  <div class="kpi-value">{("" if np.isnan(avg_volume) else f"{avg_volume:,.0f}")}</div>
-  <div class="kpi-sub">Liquidity proxy</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("### Data Export")
-        export_df = df.reset_index().rename(columns={"index": "Date"})
-        st.download_button(
-            "Download Market Data (CSV)",
-            data=export_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"{company}_{range_label}_market.csv",
-            mime="text/csv",
-        )
-# =========================================================
-# TAB: STRATEGIC INTELLIGENCE
+# TAB 1: STRATEGIC INTELLIGENCE
 # =========================================================
 with tab_strategy:
-    st.markdown("## 🧠 Strategic Intelligence Summary")
-
+    st.markdown("### 🧠 Comprehensive Strategic Positioning")
     c1, c2 = st.columns([1, 1.2], gap="large")
 
-    # -----------------------------
-    # COMPETITIVE POSITIONING INDEX
-    # -----------------------------
     with c1:
         strength = (
             "Dominant" if competitive_index >= 80 else
             "Strong" if competitive_index >= 65 else
             "Neutral" if competitive_index >= 45 else
-            "Weak"
+            "Under-performing"
         )
+        st.markdown(f"""
+        <div class="glass glass-hover">
+          <div class="kpi-label">Competitive Positioning Index</div>
+          <div class="kpi-value">{competitive_index} / 100</div>
+          <div class="kpi-sub">Classification: <b>{strength}</b></div>
+          <br/>
+          <div class="small-note">Computed based on Momentum, Sentiment Polarity, Forecast Delta, and News Volatility.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        st.markdown(
-            f"""
-<div class="glass glass-hover">
-  <div class="kpi-label">Competitive Positioning Index</div>
-  <div class="kpi-value">{competitive_index} / 100</div>
-  <div class="kpi-sub">Strategic Strength: <b>{strength}</b></div>
-  <br/>
-  <div class="small-note">
-    Computed using price momentum, sentiment polarity,
-    forecast direction, and news intensity.
-  </div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("## 🤖 AI-Generated Strategic Explanation")
-
-        st.markdown(
-            f"""
-<div class="glass glass-hover">
-  <div class="kpi-label">Executive Strategy Brief</div>
-  <pre style="
-    white-space: pre-wrap;
-    font-size: 0.92rem;
-    line-height: 1.45rem;
-    color: #e8e8e8;
-    margin-top: 10px;
-  ">
+        st.markdown("#### 🤖 AI-Generated Strategic Brief")
+        st.markdown(f"""
+        <div class="glass" style="max-height: 400px; overflow-y: auto;">
+          <div class="kpi-label">Executive Analysis</div>
+          <div style="font-size: 0.95rem; line-height: 1.6; color: #e8e8e8; margin-top: 10px; white-space: pre-wrap;">
 {llm_explanation}
-  </pre>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-        
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # -----------------------------
-    # OPPORTUNITY / THREAT SIGNAL
-    # -----------------------------
     with c2:
-        signal_color = (
-            "#22c55e" if strategic_signal["signal"] == "OPPORTUNITY"
-            else "#ff4d6d" if strategic_signal["signal"] == "THREAT"
-            else "#ffb347"
-        )
-
-        st.markdown(
-            f"""
-<div class="glass glass-hover">
-  <div class="kpi-label">Strategic Signal</div>
-  <div class="kpi-value" style="color:{signal_color}">
-    {strategic_signal['signal']}
-  </div>
-  <div class="kpi-sub">Confidence Level: {strategic_signal['confidence']}</div>
-  <hr/>
-  <ul style="margin-left:18px;">
-    {''.join([f"<li>{r}</li>" for r in strategic_signal["reason"]])}
-  </ul>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-    # -----------------------------
-    # STRATEGIC INTERPRETATION
-    # -----------------------------
-    st.markdown("### 📌 Strategic Interpretation")
-
-    interpretation = (
-        "Current indicators suggest a favorable strategic position with upside potential."
-        if strategic_signal["signal"] == "OPPORTUNITY"
-        else
-        "Warning signals detected. Risk mitigation and close monitoring are recommended."
-        if strategic_signal["signal"] == "THREAT"
-        else
-        "Signals are mixed. Continued observation is advised before taking strategic action."
-    )
-
-    st.markdown(
-        f"""
-<div class="glass">
-  <div class="small-note">{interpretation}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+        sig_data = strategic_signal["signal"]
+        sig_color = "#22c55e" if sig_data == "OPPORTUNITY" else "#ff4d6d" if sig_data == "THREAT" else "#ffb347"
+        
+        st.markdown(f"""
+        <div class="glass glass-hover">
+          <div class="kpi-label">Primary Strategic Signal</div>
+          <div class="kpi-value" style="color:{sig_color}">{sig_data}</div>
+          <div class="kpi-sub">Model Confidence: {strategic_signal.get('confidence', 'High')}</div>
+          <hr/>
+          <div class="kpi-label">Reasoning Factors:</div>
+          <ul style="margin-left:18px; color: #d7dbe6; font-size: 0.9rem;">
+            {''.join([f"<li style='margin-bottom:6px;'>{r}</li>" for r in strategic_signal.get("reason", ["Analyzing indicators..."])])}
+          </ul>
+        </div>
+        """, unsafe_allow_html=True)
 
 # =========================================================
-# TAB: FORECAST
+# TAB 2: MARKET DYNAMICS
 # =========================================================
-with tab_forecast:
-    st.markdown("### 7-Day Forecast (Prophet)")
+with tab_overview:
+    left, right = st.columns([2, 1], gap="large")
 
-    if forecast_df is None or getattr(forecast_df, "empty", False):
-        st.info("Forecast unavailable. Showing recent close trend instead.")
-        st.line_chart(market_df["Close"].tail(60))
-    else:
-        hist = market_df.reset_index()
-        date_col = "Date" if "Date" in hist.columns else hist.columns[0]
-
+    with left:
+        st.markdown("### 📊 Pricing & Indicator Analysis")
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=hist[date_col], y=hist["Close"], name="Historical", line=dict(width=2.4)))
-        fig.add_trace(go.Scatter(x=forecast_df["ds"], y=forecast_df["yhat"], name="Forecast", line=dict(width=2.4)))
+        if show_candles and all(c in df.columns for c in ["Open", "High", "Low", "Close"]):
+            fig.add_trace(go.Candlestick(
+                x=df.index, open=df["Open"], high=df["High"],
+                low=df["Low"], close=df["Close"], name="OHLC",
+                increasing_line_color="#22c55e", decreasing_line_color="#ff4d6d"
+            ))
+        else:
+            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Closing Price", line=dict(color=vars["--aqua"], width=2)))
 
-        fig.add_trace(go.Scatter(x=forecast_df["ds"], y=forecast_df["yhat_upper"], showlegend=False, line=dict(width=0)))
-        fig.add_trace(
-            go.Scatter(
-                x=forecast_df["ds"],
-                y=forecast_df["yhat_lower"],
-                fill="tonexty",
-                showlegend=False,
-                line=dict(width=0),
-                fillcolor="rgba(255,179,71,0.14)",
-            )
-        )
+        if show_indicators:
+            fig.add_trace(go.Scatter(x=df.index, y=df["MA7"], name="7-Day MA", line=dict(dash='dot', width=1.5)))
+            fig.add_trace(go.Scatter(x=df.index, y=df["MA21"], name="21-Day MA", line=dict(dash='dash', width=1.5)))
 
-        fig.update_layout(
-            template="plotly_dark",
-            height=520,
-            hovermode="x unified",
-            margin=dict(l=12, r=12, t=40, b=12),
-        )
+        fig.update_layout(template="plotly_dark", height=450, margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### Forecast Table")
-        fshow = forecast_df[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(10).copy()
-        fshow.columns = ["Date", "Forecast", "Lower", "Upper"]
-        st.dataframe(fshow, use_container_width=True)
+        if show_volume:
+            fig_v = px.bar(df, x=df.index, y="Volume", color_discrete_sequence=["#4a5568"])
+            fig_v.update_layout(template="plotly_dark", height=150, margin=dict(l=10, r=10, t=0, b=10))
+            st.plotly_chart(fig_v, use_container_width=True)
+
+    with right:
+        st.markdown("### 🔍 Technical Snapshot")
+        tr_val = "UPTREND" if df["MA7"].iloc[-1] > df["MA21"].iloc[-1] else "DOWNTREND"
+        rsi_val = df["RSI14"].iloc[-1]
+        
+        st.markdown(f"""
+        <div class="glass">
+          <div class="kpi-label">Market Momentum</div>
+          <div class="kpi-value">{tr_val}</div>
+          <div class="kpi-sub">Based on MA Crossover</div>
+        </div><br/>
+        <div class="glass">
+          <div class="kpi-label">RSI (14)</div>
+          <div class="kpi-value">{rsi_val:.2f}</div>
+          <div class="kpi-sub">{'Overbought' if rsi_val > 70 else 'Oversold' if rsi_val < 30 else 'Neutral Range'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.download_button("Export Dataset", data=df.to_csv(), file_name=f"{ticker}_data.csv", mime="text/csv")
 
 # =========================================================
-# TAB: SENTIMENT
+# TAB 3: FORECAST
+# =========================================================
+with tab_forecast:
+    st.markdown("### 🔮 Predictor (Meta Prophet Engine)")
+    if forecast_df is None:
+        st.warning("Insufficient historical depth for forecasting.")
+    else:
+        fig_f = go.Figure()
+        fig_f.add_trace(go.Scatter(x=market_df.index, y=market_df["Close"], name="Historical", line=dict(color="#6366f1")))
+        fig_f.add_trace(go.Scatter(x=forecast_df["ds"], y=forecast_df["yhat"], name="AI Projection", line=dict(color="#ffb347", width=3)))
+        fig_f.add_trace(go.Scatter(x=forecast_df["ds"], y=forecast_df["yhat_upper"], fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
+        fig_f.add_trace(go.Scatter(x=forecast_df["ds"], y=forecast_df["yhat_lower"], fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor='rgba(255,179,71,0.1)', showlegend=False))
+        
+        fig_f.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=30, b=10))
+        st.plotly_chart(fig_f, use_container_width=True)
+        st.dataframe(forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(7), use_container_width=True)
+
+# =========================================================
+# TAB 4: NLP SENTIMENT
 # =========================================================
 with tab_sentiment:
-    st.markdown("### Sentiment Overview (FinBERT)")
-
-    cA, cB = st.columns([1.1, 1.2], gap="large")
-    with cA:
-        fig_pie = px.pie(
-            names=["Positive", "Neutral", "Negative"],
-            values=[pos, neu, neg],
-            template="plotly_dark",
-            hole=0.55,
-        )
-        fig_pie.update_layout(height=360, margin=dict(l=12, r=12, t=40, b=12))
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    with cB:
-        gauge = go.Figure(
-            go.Indicator(
-                mode="gauge+number+delta",
-                value=sent_score,
-                number={"suffix": " "},
-                delta={"reference": 0},
-                gauge={
-                    "axis": {"range": [-100, 100]},
-                    "bar": {"color": "rgba(0,229,255,0.85)"},
-                    "steps": [
-                        {"range": [-100, -20], "color": "rgba(255,77,109,0.20)"},
-                        {"range": [-20, 20], "color": "rgba(167,176,192,0.16)"},
-                        {"range": [20, 100], "color": "rgba(34,197,94,0.20)"},
-                    ],
-                },
-                title={"text": "Net Sentiment Score"},
-            )
-        )
-        gauge.update_layout(template="plotly_dark", height=360, margin=dict(l=12, r=12, t=40, b=12))
-        st.plotly_chart(gauge, use_container_width=True)
-
-    st.markdown("### Article-Level Sentiment")
-    df_sent = pd.DataFrame(sentiment_details or [])
-    if df_sent.empty:
-        st.info("No sentiment details available.")
-    else:
-        st.dataframe(df_sent, use_container_width=True)
+    st.markdown("### 💬 Semantic News Analysis")
+    s1, s2 = st.columns(2)
+    with s1:
+        fig_p = px.pie(values=[pos, neu, neg], names=["Positive", "Neutral", "Negative"], hole=0.6,
+                       color_discrete_map={"Positive":"#22c55e", "Neutral":"#a7b0c0", "Negative":"#ff4d6d"})
+        st.plotly_chart(fig_p, use_container_width=True)
+    with s2:
+        fig_g = go.Figure(go.Indicator(mode="gauge+number", value=sent_score, title={'text': "Sentiment Index"},
+                                       gauge={'axis': {'range': [-100, 100]}, 'bar': {'color': "#00e5ff"}}))
+        st.plotly_chart(fig_g, use_container_width=True)
+    
+    st.dataframe(pd.DataFrame(sentiment_details), use_container_width=True)
 
 # =========================================================
-# TAB: NEWS
+# TAB 5: NEWSFEED
 # =========================================================
 with tab_news:
-    st.markdown("### Latest Headlines")
-
+    st.markdown("### 📰 Latest Strategic Headlines")
     if not news:
-        st.info("No headlines found right now.")
+        st.info("No recent news found for this ticker.")
     else:
-        # Try to merge sentiment labels back to news if sentiment_details contains them
-        # Expected fields can vary; we handle best-effort.
-        sent_map = {}
-        if isinstance(sentiment_details, list) and sentiment_details:
-            for item in sentiment_details:
-                t = (item.get("title") or "").strip()
-                if t:
-                    sent_map[t] = (item.get("sentiment") or item.get("label") or item.get("prediction") or "neutral")
-
-        shown = 0
-        for n in news:
-            if shown >= news_limit:
-                break
-
-            title = (n.get("title") or "Untitled").strip()
-            link = n.get("link") or "#"
-            desc = (n.get("description") or n.get("summary") or "").strip()
-            source = (n.get("source") or n.get("publisher") or "").strip()
-            published = (n.get("published") or n.get("pubDate") or n.get("date") or "").strip()
-
-            label = sent_map.get(title, n.get("sentiment") or "neutral")
-            badge = _sentiment_badge(str(label))
-
-            st.markdown(
-                f"""
-<div class="glass glass-hover news-card">
-  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
-    <div style="flex:1; min-width:260px;">
-      <a class="news-title" href="{link}" target="_blank">{title}</a>
-      <div class="news-meta">{source} {'· ' + published if published else ''}</div>
-    </div>
-    <div>{badge}</div>
-  </div>
-  {"<div class='news-desc'>" + desc + "</div>" if desc else ""}
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-            shown += 1
+        for n in news[:news_limit]:
+            lbl = n.get("sentiment", "neutral")
+            st.markdown(f"""
+            <div class="glass news-card">
+              <div style="display:flex; justify-content:space-between;">
+                <a href="{n.get('link','#')}" target="_blank" class="news-title">{n.get('title','Untitled')}</a>
+                {_sentiment_badge(lbl)}
+              </div>
+              <div class="news-meta">{n.get('source','Unknown Source')} · {n.get('published','Recent')}</div>
+              <div class="news-desc">{n.get('description','')[:200]}...</div>
+            </div>
+            """, unsafe_allow_html=True)
 
 # =========================================================
-# TAB: ALERTS
+# TAB 6: ALERT HUB (FIXED & REWRITTEN)
 # =========================================================
 with tab_alerts:
-    st.markdown("### 🔔 Slack Alerts")
+    st.markdown("### 🔔 Slack Notification Center")
+    
+    a_left, a_right = st.columns(2, gap="large")
+    
+    with a_left:
+        st.markdown("""
+        <div class="glass">
+            <h4>Manual Strategic Alert</h4>
+            <p class="small-note">Instantly push the current AI-generated strategy and market metrics to your linked Slack channel.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("🚨 Dispatch Strategic Slack Alert", use_container_width=True):
+            if not slack_enabled:
+                st.warning("Slack Integration is currently disabled in Sidebar.")
+            else:
+                with st.spinner("Compiling strategic blocks..."):
+                    # Generate the fixed Slack message
+                    msg_text = build_slack_message(
+                        company=company,
+                        ticker=ticker,
+                        last_price=last_close,
+                        forecast_df=forecast_df,
+                        sentiment_score=sent_score,
+                        strategic_signal=strategic_signal,
+                        llm_summary=llm_explanation
+                    )
+                    
+                    # Send via core function
+                    success = send_slack({"text": msg_text})
+                    
+                    if success:
+                        st.success("✅ Strategic Alert successfully delivered to Slack.")
+                    else:
+                        st.error("❌ Notification failed. Check Webhook URL in secrets.")
 
-    # --------------------------------------------------
-    # 1. TEST SLACK WEBHOOK (DEBUG BUTTON)
-    # --------------------------------------------------
-    st.markdown("#### 🧪 Slack Webhook Test")
-
-    if st.button("🧪 Test Slack Webhook"):
-        ok = send_slack({
-            "text": "✅ Slack webhook test from Real-Time Market Intelligence app"
-        })
-        if ok:
-            st.success("Slack test message sent successfully.")
-        else:
-            st.error("Slack test failed. Check webhook or secrets.")
+    with a_right:
+        st.markdown("""
+        <div class="glass">
+            <h4>System Diagnostics</h4>
+            <p class="small-note">Verify that your connection to the Slack API is active and functioning.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("🧪 Send Connection Test", use_container_width=True):
+            test_ok = send_slack({"text": f"🔧 *Diagnostic:* Intelligence Engine connection test for {company} successful."})
+            if test_ok:
+                st.toast("Connection verified.", icon="✔")
+            else:
+                st.error("Diagnostics failed.")
 
     st.markdown("---")
+    with st.expander("🛠️ Developer: View Alert JSON Payload"):
+        st.json(alert_payload)
 
-    # --------------------------------------------------
-    # 2. REAL-TIME STRATEGIC SLACK ALERT
-    # --------------------------------------------------
-    st.markdown("#### 🚨 Send Strategic Slack Alert")
-
-    if slack_enabled and st.button("🚨 Send Strategic Slack Alert"):
-        # Build real-time Slack message
-        slack_message = build_slack_message(
-            company=company,
-            ticker=ticker,
-            last_price=last_close,
-            forecast_df=forecast_df,
-            sentiment_score=sent_score,
-            strategic_signal=strategic_signal,
-            llm_summary=llm_explanation,
-        )
-
-        # Send to Slack
-        ok = send_slack({"text": slack_message})
-
-        if ok:
-            st.success("Strategic Slack alert sent successfully.")
-        else:
-            st.error("Slack alert failed. Verify webhook and permissions.")
-
-    st.markdown("---")
-
-    # --------------------------------------------------
-    # 3. ALERT JSON (OPTIONAL – FOR DEBUG / DEMO)
-    # --------------------------------------------------
-    st.markdown("#### 📄 Alert Payload (Debug View)")
-    st.json(alert)
+# ------------------------------------------------------------------------------
+# FOOTER
+# ------------------------------------------------------------------------------
+st.markdown(
+    "<br/><div style='text-align:center; color: #4a5568; font-size: 0.8rem;'>Market Intelligence Engine v2.4.0-Stable | Proprietary Internal Use Only</div>",
+    unsafe_allow_html=True
+)
