@@ -1,17 +1,55 @@
+# core/alerts.py
+
 import json
 import requests
 import streamlit as st
+from datetime import datetime
 
 
+# --------------------------------------------------
+# BUILD ALERT OBJECT (USED BY app.py UI + LOGIC)
+# --------------------------------------------------
+def build_alert(
+    company: str,
+    ticker: str,
+    sentiment_counts: dict,
+    strategic: dict,
+) -> dict:
+    """
+    Builds a normalized alert object for UI + Slack.
+    """
+
+    signal = strategic.get("strategic_signal", {}).get("signal", "NEUTRAL")
+
+    alert_type = (
+        "OPPORTUNITY" if signal == "OPPORTUNITY"
+        else "THREAT" if signal == "THREAT"
+        else "NEUTRAL"
+    )
+
+    return {
+        "alert_type": alert_type,
+        "company": company,
+        "ticker": ticker,
+        "timestamp": datetime.utcnow().isoformat(),
+        "sentiment": sentiment_counts,
+        "strategic_action": signal,
+        "message": f"Strategic signal generated for {company} ({ticker})",
+    }
+
+
+# --------------------------------------------------
+# SEND SLACK MESSAGE (INCOMING WEBHOOK)
+# --------------------------------------------------
 def send_slack(payload: dict) -> bool:
     """
-    Sends a Slack message using Incoming Webhook.
+    Sends a Slack message via Incoming Webhook.
+    Expects payload = {"text": "..."} or Block Kit payload.
     """
 
     webhook_url = st.secrets.get("SLACK_WEBHOOK_URL")
 
     if not webhook_url:
-        st.error("SLACK_WEBHOOK_URL not found in Streamlit secrets.")
         return False
 
     try:
@@ -22,12 +60,7 @@ def send_slack(payload: dict) -> bool:
             timeout=10,
         )
 
-        if response.status_code != 200:
-            st.error(f"Slack API error {response.status_code}: {response.text}")
-            return False
+        return response.status_code == 200
 
-        return True
-
-    except Exception as e:
-        st.error(f"Slack request failed: {e}")
+    except Exception:
         return False
