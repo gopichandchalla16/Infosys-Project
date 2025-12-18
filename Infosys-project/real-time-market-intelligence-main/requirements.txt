@@ -1,0 +1,13 @@
+streamlit
+yfinance
+pandas
+numpy
+matplotlib
+prophet
+feedparser
+transformers
+torch
+requests
+plotly
+prophet>=1.1
+cmdstanpy
